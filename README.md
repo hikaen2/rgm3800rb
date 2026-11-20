@@ -20,6 +20,7 @@ ruby rgm3800.rb [-d DEV] info
 ruby rgm3800.rb [-d DEV] list
 ruby rgm3800.rb [-d DEV] download [-o DIR] [RANGE]
 ruby rgm3800.rb [-d DEV] config [--type 0|1|2] [--interval 5..60] [--memory-full overwrite|stop]
+ruby rgm3800.rb [-d DEV] erase [--yes]
 ```
 
 `-d` selects the serial device (default `/dev/ttyUSB0`). Progress and errors go to stderr.
@@ -60,6 +61,20 @@ ruby rgm3800.rb config --type 2 --interval 60 --memory-full stop
 ```
 
 Data types: 0 = time, lat, lon; 1 = + altitude; 2 = + speed. Types 3 and 4 are not supported.
+
+Erase all tracks. This cannot be undone, so download and check the tracks first. The tool asks on
+the terminal before erasing; `--yes` skips the question. Erasing takes about 30 seconds:
+
+```
+$ ruby rgm3800.rb download -o ~/gps-logs/new
+$ ruby rgm3800.rb erase
+Erase all 10 tracks (2234 waypoints)? [y/N] y
+PSRFTXTSFAM Test Report: Erase now
+logger is empty
+```
+
+The logger keeps logging while connected. If it has a GPS fix, it may start a new track right after
+the erase; `erase` then reports `logger erased; it has started a new track (N waypoints)`.
 
 ## Known issue: wrong dates
 

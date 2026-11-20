@@ -90,10 +90,11 @@ module RGM3800
     end
 
     def self.open(dev)
-      File.open(dev, 'r+b').close
+      mode = File::RDWR | File::NOCTTY | File::BINARY # NOCTTY: never become our controlling terminal
+      File.open(dev, mode).close
       system('stty', '-F', dev, '115200', 'cs8', '-parenb', '-cstopb', 'raw', '-echo',
              out: File::NULL, err: File::NULL) or raise Error, "#{dev}: stty failed"
-      new(File.open(dev, 'r+b'))
+      new(File.open(dev, mode))
     rescue SystemCallError => e
       raise Error, "#{dev}: #{e.message.sub(/ @ .*/, '')}"
     end
@@ -171,11 +172,41 @@ module RGM3800
       raise Error, "reading #{count} records at #{address} failed after 5 tries"
     end
 
+    # Erases all tracks, yielding progress lines; returns the tracks afterwards.
+    # Done when no progress line arrives for 5 read timeouts; gives up after 10 minutes.
+    # The logger keeps logging and may start a new track at once, so the erase counts
+    # as done when fewer than `waypoints_before` waypoints remain.
+    def erase(waypoints_before, limit: 600)
+      raise Error, 'logger refused to erase' unless query('PROY109,-1', 'LOG109') == [1]
+
+      start = last = now
+      loop do
+        line = read_line
+        if line&.start_with?('PSRFTXT')
+          last = now
+          yield line if block_given?
+        elsif now - last >= 5 * @timeout
+          break
+        end
+        raise Error, 'erase did not finish within 10 minutes' if now - start > limit
+      end
+      left = nil
+      5.times do # like PROY104, the logger may report the new state with a delay
+        left = tracks
+        break if left.empty? || left.sum { |t| t[:count] } < waypoints_before
+
+        sleep @timeout
+      end
+      left
+    end
+
     def configure(format, interval, memory_full)
       query("PROY104,0,#{interval},#{format},#{memory_full}", 'LOG104') == [1]
     end
 
     private
+
+    def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
     def drain
       loop { @io.read_nonblock(65_536) }
@@ -208,6 +239,7 @@ module RGM3800
       download [-o DIR] [RANGE]    download tracks as NMEA files (RANGE: N, N-, N-M, -K)
       config [--type 0|1|2] [--interval 5..60] [--memory-full overwrite|stop]
                                    change the logging configuration
+      erase [--yes]                delete all tracks (asks first unless --yes)
 
     Options:
       -d DEV                       serial device (default /dev/ttyUSB0)
@@ -220,7 +252,7 @@ module RGM3800
       o.on('-h', '--help') { puts USAGE; exit }
     end.order!(argv)
     cmd = argv.shift
-    raise Error, "unknown command #{cmd.inspect}; see --help" unless %w[info list download config].include?(cmd)
+    raise Error, "unknown command #{cmd.inspect}; see --help" unless %w[info list download config erase].include?(cmd)
 
     # Parse command options before touching the device.
     opts = {}
@@ -231,6 +263,7 @@ module RGM3800
       OptionParser.new { |o| o.on('-o DIR') { |v| opts[:dir] = v } }.parse!(argv)
       opts[:range] ||= argv.shift
     when 'config' then opts = parse_config(argv)
+    when 'erase' then OptionParser.new { |o| o.on('-y', '--yes') { opts[:yes] = true } }.parse!(argv)
     end
     raise Error, "unexpected argument #{argv.first}" unless argv.empty?
 
@@ -319,6 +352,28 @@ module RGM3800
                    "logger has #{got.join('/')}"
     end
     puts config_text(dev.info)
+  end
+
+  def cmd_erase(dev, opts)
+    tracks = dev.tracks
+    before = tracks.sum { |t| t[:count] }
+    unless opts[:yes]
+      tty = opts.fetch(:tty) { File.open('/dev/tty') rescue nil }
+      raise Error, 'no terminal to ask for confirmation; use --yes' unless tty
+
+      $stderr.print "Erase all #{tracks.size} tracks (#{before} waypoints)? [y/N] "
+      raise Error, 'nothing erased' unless tty.gets.to_s.strip.match?(/\Ay(es)?\z/i)
+    end
+    left = dev.erase(before) { |line| $stderr.print "\r#{line.byteslice(0, 70)}" }
+    warn ''
+    after = left.sum { |t| t[:count] }
+    if left.empty?
+      puts 'logger is empty'
+    elsif after < before
+      puts "logger erased; it has started a new track (#{after} waypoints)"
+    else
+      raise Error, "erase finished but the logger still has #{after} waypoints (#{before} before)"
+    end
   end
 end
 

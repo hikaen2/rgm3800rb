@@ -4,6 +4,7 @@
 require 'minitest/autorun'
 require 'json'
 require 'tmpdir'
+require 'stringio'
 require_relative '../rgm3800'
 
 SAMPLE = ['01071224f66d5a3f69d7463d6e503dc22d4f8f42'].pack('H*')
@@ -209,5 +210,86 @@ class TestCLI < Minitest::Test
   def test_list_empty_logger
     dev = RGM3800::Device.new(FakeIO.new('PROY108' => line('LOG108,2,0,0,1,0,60,0,0,0')), timeout: 0)
     assert_output('') { RGM3800.cmd_list(dev, {}) }
+  end
+end
+
+class TestErase < Minitest::Test
+  BEFORE = 'LOG108,2,0,0,1,0,60,0,2,5'
+  AFTER = 'LOG108,2,0,0,1,0,60,0,0,0'
+
+  def logger(log109: line('LOG109,1'), after: AFTER, track0_after: 'LOG101,20070406,2,1,0')
+    progress = (1..3).map { |i| line("PSRFTXTSFAM Test Report: #{i}") }.join
+    FakeIO.new('PROY108' => [line(BEFORE)] + ([line(after)] * 5),
+               'PROY101,0' => [line('LOG101,20070203,2,3,0')] + ([line(track0_after)] * 5),
+               'PROY101,1' => line('LOG101,20070204,2,2,60'),
+               'PROY109,-1' => [log109.to_s + progress])
+  end
+
+  def erase(io, opts)
+    out, err = capture_io { RGM3800.cmd_erase(RGM3800::Device.new(io, timeout: 0), opts) }
+    [out, err, io.written.grep(/PROY109/).size]
+  end
+
+  def test_erase_with_yes
+    out, err, sent = erase(logger, yes: true)
+    assert_equal "logger is empty\n", out
+    assert_match(/Test Report: 3/, err)
+    assert_equal 1, sent
+  end
+
+  def test_confirm_accepts_y_and_yes
+    ["y\n", "YES\n", " Yes \n"].each do |answer|
+      _, err, sent = erase(logger, tty: StringIO.new(answer))
+      assert_match(/\AErase all 2 tracks \(5 waypoints\)\? \[y\/N\] /, err)
+      assert_equal 1, sent, answer
+    end
+  end
+
+  def test_decline_sends_nothing
+    ["n\n", "\n", 'yy', ''].each do |answer|
+      io = logger
+      e = assert_raises(RGM3800::Error, answer.inspect) do
+        capture_io { RGM3800.cmd_erase(RGM3800::Device.new(io, timeout: 0), tty: StringIO.new(answer)) }
+      end
+      assert_equal 'nothing erased', e.message
+      assert_empty io.written.grep(/PROY109/)
+    end
+  end
+
+  def test_no_terminal
+    io = logger
+    e = assert_raises(RGM3800::Error) { RGM3800.cmd_erase(RGM3800::Device.new(io, timeout: 0), tty: nil) }
+    assert_match(/--yes/, e.message)
+    assert_empty io.written.grep(/PROY109/)
+  end
+
+  def test_erase_refused
+    e = assert_raises(RGM3800::Error) { erase(logger(log109: line('LOG109,0')), yes: true) }
+    assert_match(/refused/, e.message)
+  end
+
+  def test_erase_no_reply
+    e = assert_raises(RGM3800::Error) { erase(logger(log109: nil), yes: true) }
+    assert_match(/no response to PROY109/, e.message)
+  end
+
+  def test_cli_rejects_arguments_before_device_access
+    script = File.join(__dir__, '..', 'rgm3800.rb')
+    out = `#{RbConfig.ruby} #{script} -d /nonexistent erase extra 2>&1`
+    refute $?.success?
+    assert_match(/unexpected argument extra/, out) # not "No such file": the device was not opened
+    assert_match(/erase \[--yes\]/, `#{RbConfig.ruby} #{script} --help`)
+  end
+
+  def test_new_track_after_erase
+    out, = erase(logger(after: 'LOG108,2,0,0,1,0,60,0,1,1'), yes: true)
+    assert_equal "logger erased; it has started a new track (1 waypoints)\n", out
+  end
+
+  def test_tracks_remain
+    e = assert_raises(RGM3800::Error) do
+      erase(logger(after: 'LOG108,2,0,0,1,0,60,0,1,5', track0_after: 'LOG101,20070203,2,5,0'), yes: true)
+    end
+    assert_match(/still has 5 waypoints \(5 before\)/, e.message)
   end
 end

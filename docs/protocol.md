@@ -30,6 +30,7 @@ What `rgm3800.rb` knows about the RoyalTek RGM-3800 logger. Every fact is marked
 | `PROY101,<n>` | `LOG101,<yyyymmdd>,<format>,<waypoints>,<address>` | [HW] |
 | `PROY102,<address>,<format>,<count>` | `LOG102,...` data lines, see below | [HW] |
 | `PROY104,0,<interval>,<format>,<memfull>` | `LOG104,1` on success, `LOG104,0` on failure | [HW] |
+| `PROY109,-1` | `LOG109,1`, then progress lines until the memory is erased | [HW] |
 
 - `PROY108` example: `LOG108,2,-1,-1,1,0,60,192,10,37`. `memfull` 0 = overwrite oldest sector,
   1 = stop logging [HW for 1, EXT for 0]. Fields 1, 2, 4 and 6 are unknown; field 6 was seen as 0
@@ -46,13 +47,21 @@ What `rgm3800.rb` knows about the RoyalTek RGM-3800 logger. Every fact is marked
 - `PROY104`: the change is acknowledged at once but `PROY108` shows the new value only after
   about one second. The tool sends `0` as the first argument as rgm3800py does; its meaning is
   unknown. Verified for changing the interval; format and memory-full use the same command. [HW]
+- `PROY109,-1` erases all tracks. The logger replies `LOG109,1` at once, then sends
+  `PSRFTXTSFAM Test Report: Erase now` about once per second (33-34 lines, about 33 s for the
+  8192 KB memory) and then goes silent. Right afterwards `PROY108` reports 0 tracks:
+  `LOG108,2,-1,-1,1,0,60,192,0,0`. The refusal reply (presumably `LOG109,0`) was not seen. [HW]
+- Logging is not paused by the erase and no command to pause it is known. If the logger has a GPS
+  fix it starts a new track soon after the erase (seen after 16 s and after about 3 minutes):
+  track 0 at address 0, e.g. `LOG101,20070406,2,1,0`, `LOG108,2,-1,-1,1,0,60,192,1,1`. [HW]
+  `rgm3800.rb erase` therefore counts the erase as done when the logger reports no tracks or
+  fewer waypoints than before.
 
 Seen in rgm3800py, not used and unverified: [EXT]
 
 - `PROY003` → `LOG003,<yyyymmdd>,<hhmmss>` current UTC time (`LOG002` without a GPS fix).
 - `PROY005` → several `PSRFTXT` lines including the firmware version.
 - `PROY006` → `LOG006,...` time range of the stored waypoints.
-- `PROY109,-1` → `LOG109,1` erases the memory.
 - `PROY103,0,<0|1>` → G_Mouse mode.
 
 ## Record format
