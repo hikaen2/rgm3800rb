@@ -13,6 +13,7 @@ module RGM3800
   RECORD_LEN = { 0 => 12, 1 => 16, 2 => 20, 3 => 24, 4 => 60 }.freeze
   FORMAT_DESC = { 0 => 'time, lat, lon', 1 => 'time, lat, lon, alt', 2 => 'time, lat, lon, alt, vel' }.freeze
   MEMORY_FULL = { 0 => 'overwrite', 1 => 'stop' }.freeze
+  ROLLOVER = 7168 # days (1024 weeks): the logger's dates are this much too early since 2026
 
   Waypoint = Struct.new(:h, :m, :s, :lat, :lon, :alt, :vel)
 
@@ -61,6 +62,8 @@ module RGM3800
         nmea_line(format('GPRMC,%s,A,%s,%06.2f,0.0,%s,,,E', time, pos, w.vel / 1.852, date.strftime('%d%m%y')))
     end.join
   end
+
+  def file_name(number, date) = format('%05d_%s.nmea', number, date.strftime('%Y%m%d'))
 
   # Parses N, N-, N-M or -K against `count` tracks; returns a Range.
   def parse_range(arg, count)
@@ -236,7 +239,9 @@ module RGM3800
     Commands:
       info                         show logger configuration and memory usage
       list                         list the tracks on the logger
-      download [-o DIR] [RANGE]    download tracks as NMEA files (RANGE: N, N-, N-M, -K)
+      download [-o DIR] [--fix-rollover] [RANGE]
+                                   download tracks as NMEA files (RANGE: N, N-, N-M, -K);
+                                   --fix-rollover adds 1024 weeks to the logger's dates
       config [--type 0|1|2] [--interval 5..60] [--memory-full overwrite|stop]
                                    change the logging configuration
       erase [--yes]                delete all tracks (asks first unless --yes)
@@ -260,7 +265,10 @@ module RGM3800
     when 'download'
       opts[:dir] = '.'
       opts[:range] = argv.pop if argv.last&.match?(/\A-\d+\z/) # -K would look like an option
-      OptionParser.new { |o| o.on('-o DIR') { |v| opts[:dir] = v } }.parse!(argv)
+      OptionParser.new do |o|
+        o.on('-o DIR') { |v| opts[:dir] = v }
+        o.on('--fix-rollover') { opts[:fix_rollover] = true }
+      end.parse!(argv)
       opts[:range] ||= argv.shift
     when 'config' then opts = parse_config(argv)
     when 'erase' then OptionParser.new { |o| o.on('-y', '--yes') { opts[:yes] = true } }.parse!(argv)
@@ -304,11 +312,12 @@ module RGM3800
     failed = selected.reject { |t| FORMAT_DESC.key?(t[:format]) }
     failed.each { |t| warn "rgm3800: track #{t[:number]}: record format #{t[:format]} is not supported" }
     (selected - failed).each do |t|
-      path = File.join(opts[:dir], format('%05d_%s.nmea', t[:number], t[:date].strftime('%Y%m%d')))
+      date = opts[:fix_rollover] ? t[:date] + ROLLOVER : t[:date]
+      path = File.join(opts[:dir], file_name(t[:number], date))
       records = dev.records(t[:number]) do |i|
         $stderr.print "\rtrack #{t[:number]}: #{i}/#{t[:count]}"
       end
-      text = nmea(records.filter_map { |r| decode(r, t[:format]) }, t[:date])
+      text = nmea(records.filter_map { |r| decode(r, t[:format]) }, date)
       tmp = "#{path}.part"
       begin
         File.binwrite(tmp, text)

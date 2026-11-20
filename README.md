@@ -18,7 +18,7 @@ sudo usermod -aG dialout $USER   # then log out and in again
 ```
 ruby rgm3800.rb [-d DEV] info
 ruby rgm3800.rb [-d DEV] list
-ruby rgm3800.rb [-d DEV] download [-o DIR] [RANGE]
+ruby rgm3800.rb [-d DEV] download [-o DIR] [--fix-rollover] [RANGE]
 ruby rgm3800.rb [-d DEV] config [--type 0|1|2] [--interval 5..60] [--memory-full overwrite|stop]
 ruby rgm3800.rb [-d DEV] erase [--yes]
 ```
@@ -79,8 +79,16 @@ the erase; `erase` then reports `logger erased; it has started a new track (N wa
 ## Known issue: wrong dates
 
 The logger's GPS week number has rolled over, so it reports dates 1024 weeks (about 19.6 years)
-early, e.g. 2007-02-03 for 2026-09-19. The files contain the dates as the logger reports them,
-like the official tool. Correct them in a separate step.
+early, e.g. 2007-02-03 for 2026-09-19. By default the files contain the dates as the logger
+reports them, like the official tool. For this logger, download with `--fix-rollover` to add the
+1024 weeks back:
+
+```
+ruby rgm3800.rb download -o ~/gps-logs/new --fix-rollover    # 00000_20260919.nmea, not 00000_20070203.nmea
+```
+
+The tool does not detect the rollover itself. Do not use the option for a logger whose dates are
+already correct: its dates would jump 19.6 years into the future.
 
 ## Development
 

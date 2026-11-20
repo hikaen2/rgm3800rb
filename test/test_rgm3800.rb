@@ -293,3 +293,56 @@ class TestErase < Minitest::Test
     assert_match(/still has 5 waypoints \(5 before\)/, e.message)
   end
 end
+
+class TestRollover < Minitest::Test
+  def fixture
+    path = File.join(FIXTURES, 'raw.json')
+    skip 'private fixture test/fixtures/france/ not present' unless File.exist?(path)
+    JSON.parse(File.read(path))
+  end
+
+  def convert(track, shift)
+    date = Date.strptime(track['date'], '%Y%m%d') + shift
+    text = RGM3800.nmea(track['records'].map { |r| RGM3800.decode([r].pack('H*'), track['format']) }, date)
+    [RGM3800.file_name(track['number'], date), text]
+  end
+
+  def rmc_dates(text) = text.scan(/^\$GPRMC,(\d{6})\.000,.*?,(\d{6}),,,E\*/)
+
+  def test_download_fix_rollover
+    io = FakeIO.new('PROY108' => line('LOG108,2,0,0,1,0,60,0,1,1'),
+                    'PROY101,0' => line('LOG101,20070203,2,1,0'),
+                    'PROY102,0,2,1' => line("LOG102,#{[0, 20].pack('vC')}".b + SAMPLE))
+    Dir.mktmpdir do |dir|
+      capture_io { RGM3800.cmd_download(RGM3800::Device.new(io, timeout: 0), dir: dir, fix_rollover: true) }
+      assert_equal ['00000_20260919.nmea'], Dir.children(dir)
+      assert_equal [%w[071836 190926]], rmc_dates(File.binread(File.join(dir, '00000_20260919.nmea')))
+    end
+  end
+
+  def test_midnight_on_track4
+    name, text = convert(fixture[4], RGM3800::ROLLOVER)
+    assert_equal '00004_20260923.nmea', name
+    dates = rmc_dates(text)
+    i = dates.index { |time, _| time == '000022' }
+    assert_operator i, :>, 0
+    assert(dates[0...i].all? { |_, d| d == '230926' })
+    assert(dates[i..].all? { |_, d| d == '240926' })
+  end
+
+  def test_only_dates_change
+    fixture.each do |t|
+      plain = convert(t, 0)[1].lines
+      fixed = convert(t, RGM3800::ROLLOVER)[1].lines
+      assert_equal plain.size, fixed.size
+      plain.zip(fixed).each do |a, b|
+        if a.start_with?('$GPGGA')
+          assert_equal a, b
+        else
+          strip = ->(l) { l.split(/[,*]/).tap { |f| f[9] = f[-1] = nil } }
+          assert_equal strip[a], strip[b]
+        end
+      end
+    end
+  end
+end

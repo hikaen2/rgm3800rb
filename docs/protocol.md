@@ -37,7 +37,8 @@ What `rgm3800.rb` knows about the RoyalTek RGM-3800 logger. Every fact is marked
   and 192. [HW]
 - `PROY100` example: `LOG100,8388608,65536,128,0`. The last field is unknown. [HW]
 - `PROY101` dates suffer from the GPS week-number rollover: a track recorded on 2026-09-19 is
-  reported as 2007-02-03 (1024 weeks early). The tool does not correct this. [HW]
+  reported as 2007-02-03 (1024 weeks early). `download` keeps these dates unless `--fix-rollover`
+  is given, which adds exactly 7168 days to each track's start date. [HW]
 - `PROY102` only works for addresses inside the track last selected with `PROY101`; otherwise the
   reply is `LOG102,0`. So `PROY101,<n>` must be sent before reading track `n`. [HW]
 - `PROY102` reply: one line per up to 240 payload bytes:
